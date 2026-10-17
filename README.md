@@ -301,6 +301,7 @@ rpa-loader-analyzer/
 ├── dist/
 │   └── RpaLoaderAnalyzer.exe
 ├── README.md
+├── LICENSE
 ├── .gitignore
 ├── .gitattributes
 ├── requirements.txt
@@ -349,3 +350,14 @@ FFmpeg 单元测试使用 mock 验证回退逻辑；如果本机存在 `ffmpeg`/
 - [安全模型](docs/SECURITY.md)
 - [合规与免责声明](docs/COMPLIANCE.md)
 - [RPA 与规则格式](docs/FORMATS.md)
+- [MIT License](LICENSE)
+
+## License
+
+本项目源代码采用 **MIT License** 发布，详见 [LICENSE](LICENSE)。
+
+Copyright (c) 2026 dieraun
+
+> MIT 许可仅覆盖本仓库的源代码和文档，不覆盖游戏本体、游戏资源、第三方组件
+> （uncompyle6、xdis、FFmpeg、PyInstaller 等），也不构成对任何游戏内容的授权。
+
