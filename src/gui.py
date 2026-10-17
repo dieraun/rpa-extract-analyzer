@@ -221,6 +221,7 @@ class AnalyzerApp:
         self._build_export_tab(notebook)
         self._build_media_tab(notebook)
         self._refresh_path_info()
+        self.notebook = notebook
 
         log_frame = ttk.LabelFrame(outer, text=self._t("log.title"), padding=6)
         log_frame.grid(row=3, column=0, sticky="nsew")
@@ -434,11 +435,20 @@ class AnalyzerApp:
 
     def _rebuild_ui(self) -> None:
         existing_log = list(self._log_lines)
+        selected_tab = 0
+        try:
+            selected_tab = self.notebook.index("current")
+        except (AttributeError, tk.TclError):
+            pass
         for child in self.root.winfo_children():
             child.destroy()
         self._build_ui()
         for line in existing_log:
             self._append_log_text(line)
+        try:
+            self.notebook.select(selected_tab)
+        except (tk.TclError, IndexError):
+            pass
         if not self.archives and self.loader is None:
             self.summary.set(self._t("status.not_scanned"))
         self.status.set(self._t("status.ready"))
