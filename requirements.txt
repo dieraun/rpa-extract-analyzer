@@ -1,0 +1,5 @@
+# Runtime dependencies for rpa-loader-analyzer.
+# FFmpeg/ffprobe are optional external binaries and are NOT installed by pip.
+
+uncompyle6>=3.9.0,<4
+xdis>=6.1.0,<7

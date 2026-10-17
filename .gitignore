@@ -1,0 +1,41 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# PyInstaller build artifacts
+build/
+dist/*
+!dist/RpaLoaderAnalyzer.exe
+*.spec
+*.manifest
+
+# Runtime output and temporary files
+output/
+rpa-loader-analyzer-output/
+*.log
+*.tmp
+*.part
+settings.json
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
