@@ -15,7 +15,7 @@ Windows 单文件 EXE。
   启动后自动检查，失败只记录日志，不阻塞使用。
 - WebM → MP4 转换器基于 `mp4_merger.py v4.5` 重构：GPU 实际试编码验证、
   NVENC/QSV/AMF/VAAPI 支持、运行时失败自动回退 CPU、CRF 16 / AAC 320k。
-- 提供 v1.0.0 单文件 EXE 和 GitHub tag/release。
+- 提供 v1.0.0 单文件 EXE 和 GitHub tag；可在 Releases 页面手动创建 Release 并上传 EXE。
 
 ## 项目定位
 
