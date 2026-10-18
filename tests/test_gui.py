@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from src.gui import AnalyzerApp, _atomic_json, _is_within, _unique_subdir, main
+from src.update_checker import UpdateInfo
 from tests.test_rpa_parser import build_rpa
 
 
@@ -78,7 +79,11 @@ class GuiHelperTests(unittest.TestCase):
             except tk.TclError as exc:
                 self.skipTest(f"无可用图形环境: {exc}")
             root.withdraw()
-            app = AnalyzerApp(root, settings_path=root_dir / "settings.json")
+            app = AnalyzerApp(
+                root,
+                settings_path=root_dir / "settings.json",
+                startup_update_check=False,
+            )
             app.work_dir.set(str(work))
             app.game_dir.set(str(game))
             try:
@@ -118,7 +123,11 @@ class GuiHelperTests(unittest.TestCase):
             except tk.TclError as exc:
                 self.skipTest(f"无可用图形环境: {exc}")
             root.withdraw()
-            app = AnalyzerApp(root, settings_path=settings)
+            app = AnalyzerApp(
+                root,
+                settings_path=settings,
+                startup_update_check=False,
+            )
             try:
                 self.assertEqual(app.language, "zh_CN")
                 self.assertEqual(app._t("tabs.scan"), "1. 扫描与分析")
@@ -134,6 +143,94 @@ class GuiHelperTests(unittest.TestCase):
                 self.assertEqual(app.language, "zh_CN")
             finally:
                 app._on_close()
+
+    def test_about_dialog_shows_developer_and_build(self) -> None:
+        try:
+            import tkinter as tk
+        except ImportError as exc:
+            self.skipTest(f"tkinter 不可用: {exc}")
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"无可用图形环境: {exc}")
+        root.withdraw()
+        app = AnalyzerApp(
+            root,
+            settings_path=Path(tempfile.gettempdir()) / "rpa-gui-test-settings.json",
+            startup_update_check=False,
+        )
+
+        def _texts(widget) -> list[str]:
+            values: list[str] = []
+            for child in widget.winfo_children():
+                try:
+                    values.append(str(child.cget("text")))
+                except Exception:
+                    pass
+                values.extend(_texts(child))
+            return values
+
+        try:
+            app._show_about()
+            root.update()
+            dialogs = [
+                child
+                for child in root.winfo_children()
+                if isinstance(child, tk.Toplevel)
+            ]
+            self.assertEqual(len(dialogs), 1)
+            texts = " ".join(_texts(dialogs[0]))
+            self.assertIn("dieraun", texts)
+            self.assertIn("1.0.0", texts)
+            self.assertIn("MIT", texts)
+            dialogs[0].destroy()
+        finally:
+            app._on_close()
+
+    def test_update_result_handling(self) -> None:
+        try:
+            import tkinter as tk
+        except ImportError as exc:
+            self.skipTest(f"tkinter 不可用: {exc}")
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"无可用图形环境: {exc}")
+        root.withdraw()
+        app = AnalyzerApp(
+            root,
+            settings_path=Path(tempfile.gettempdir()) / "rpa-gui-test-settings-2.json",
+            startup_update_check=False,
+        )
+        try:
+            with mock.patch("src.gui.messagebox.showinfo") as info_box, mock.patch(
+                "src.gui.messagebox.askyesno", return_value=False
+            ), mock.patch("src.gui.messagebox.showwarning") as warn_box:
+                app._handle_update_info(
+                    UpdateInfo(
+                        current_version="1.0.0",
+                        latest_version="1.0.0",
+                        update_available=False,
+                    ),
+                    manual=True,
+                )
+                info_box.assert_called_once()
+                app._handle_update_info(
+                    UpdateInfo(
+                        current_version="1.0.0",
+                        latest_version="1.1.0",
+                        update_available=True,
+                        release_url="https://example.invalid/release",
+                    ),
+                    manual=False,
+                )
+                app._handle_update_info(
+                    UpdateInfo(current_version="1.0.0", error="offline"),
+                    manual=True,
+                )
+                warn_box.assert_called_once()
+        finally:
+            app._on_close()
 
 
 if __name__ == "__main__":

@@ -66,25 +66,26 @@ class FfmpegIntegrationTests(unittest.TestCase):
             result = convert_webm(
                 webm,
                 mp4,
-                options=FfmpegOptions(timeout=120),
+                options=FfmpegOptions(hardware="cpu", timeout=120),
             )
             self.assertTrue(result.success, result.message)
+            self.assertFalse(result.stream_copy)
             self.assertTrue(mp4.is_file())
             self.assertGreater(mp4.stat().st_size, 0)
             info = probe_media(mp4)
             self.assertTrue(info.has_video)
+            self.assertEqual(info.video_codec, "h264")
+            self.assertEqual(info.audio_codec, "aac")
 
-            reencoded = root / "sample-reencoded.mp4"
-            second = convert_webm(
+            copy_mp4 = root / "sample-copy.mp4"
+            copy_result = convert_webm(
                 webm,
-                reencoded,
-                options=FfmpegOptions(timeout=120, force_reencode=True),
+                copy_mp4,
+                options=FfmpegOptions(
+                    hardware="cpu", timeout=120, stream_copy_first=True
+                ),
             )
-            self.assertTrue(second.success, second.message)
-            self.assertFalse(second.stream_copy)
-            second_info = probe_media(reencoded)
-            self.assertEqual(second_info.video_codec, "h264")
-            self.assertEqual(second_info.audio_codec, "aac")
+            self.assertTrue(copy_result.success, copy_result.message)
 
 
 if __name__ == "__main__":

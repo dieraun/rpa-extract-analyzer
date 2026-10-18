@@ -171,16 +171,16 @@ python -m src analyze loader.pyo --asm-out output --rules-out output/rules.json
 
 ## 6. 媒体转换
 
-- 输出扩展名支持 `.mp4`、`.mkv`、`.webm`。
-- 先尝试 `-c copy`；FFmpeg 非零退出或未生成有效输出时，再重编码。`--reencode` 可跳过
-  流复制，强制转成 H.264/AAC（MP4 兼容性更稳）。
-- 重编码默认 `libx264` + AAC；`--codec hevc` 使用 `libx265`。
-- 硬件编码：
-  - `nvenc` -> `h264_nvenc` / `hevc_nvenc`
-  - `qsv` -> `h264_qsv` / `hevc_qsv`
-  - `vaapi` -> `h264_vaapi` / `hevc_vaapi`，带 `-vaapi_device` 和
-    `format=nv12,hwupload`
-- WebM 输出不支持硬件编码器（需要 VP9/Opus）。
+WebM -> MP4 转换器基于 `mp4_merger.py v4.5` 的策略重构：
+
+- 仅输出 `.mp4`。
+- 默认 H.264/AAC：CRF 16、AAC 320k、48 kHz 立体声、`+faststart`。
+- 自动检测 NVENC / QSV / AMF，并用 1 秒测试源实际试编码验证。
+- 显式指定的硬件编码器验证失败时回退 CPU；运行时失败再次回退 CPU。
+- 源为 10-bit 时保留色深；否则统一 `yuv420p` 并修正奇数尺寸。
+- `--copy` 可先尝试流复制；失败后仍会重编码。
+- 其他选项：`--hardware auto|cpu|nvidia|intel|amd|vaapi`、`--crf`、
+  `--audio-bitrate`、`--fast`、`--overwrite`、`--vaapi-device`。
 - 输入和输出不能是同一路径；默认不覆盖输出。
 
 ## 7. 限制

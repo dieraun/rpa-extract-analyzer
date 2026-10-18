@@ -109,13 +109,18 @@ Python 3 在协议 0–2 中把 `bytes` 表示为：
 
 ## 6. 网络与外部进程
 
-- 项目代码不包含 HTTP 客户端、上传逻辑或远程下载逻辑。
+- 唯一的出站网络请求是版本检查：`src/update_checker.py` 对固定 GitHub API 执行
+  HTTPS GET，不携带本地路径、游戏数据、密钥或用户身份信息。GitHub 会收到常规请求
+  元数据（IP、User-Agent）。离线、限流或证书错误只记录日志，不阻塞 GUI。
+- 版本检查失败不会降级到 HTTP，也不会访问任意用户提供的 URL；下载页面只通过浏览器打开。
 - 媒体转换只接受本地存在的文件；FFmpeg/ffprobe 命令带 `-protocol_whitelist file`，
   拒绝网络协议。
+- 硬件编码器使用前会先做 1 秒试编码；失败自动回退 CPU。
 - 命令以 `list[str]` 传给 `subprocess.run`，`shell=False`，不使用字符串拼接 shell。
 - 输出使用临时文件，失败清理；输入文件不写入。
 - 反汇编使用 xdis 读取 code object；不会把反汇编文本传给 Python 解释器。
-- 程序不会在 `scan`/`analyze`/`export` 中启动 FFmpeg；只有显式 `convert` 子命令会调用。
+- 程序不会在 `scan`/`analyze`/`export` 中启动 FFmpeg；只有显式 `convert` 子命令或
+  GUI 媒体按钮会调用。
 
 **注意**：FFmpeg/ffprobe 是外部程序，其解析器和编解码器可能有独立漏洞。只处理可信来源的
 媒体，并保持 FFmpeg 更新。

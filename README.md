@@ -1,14 +1,25 @@
-# rpa-loader-analyzer
+# RPA Loader Analyzer 1.0.0
 
-本地、只读的 Ren'Py `loader.pyo` / RPA 资源包研究工具。
+本地、只读的 Ren'Py `loader.pyo` / RPA 资源包研究工具，带中英文 GUI、自动化版本检查和
+Windows 单文件 EXE。
 
 > **用途限制**：仅供对**拥有合法授权**的文件进行技术学习、兼容性研究和数据恢复。
 > 不用于绕过访问控制、破解商业内容、规避反作弊或分发游戏资源。使用者需自行确认
 > 当地法律、游戏许可协议和授权范围。详见 [docs/COMPLIANCE.md](docs/COMPLIANCE.md)。
 
+## v1.0.0 更新
+
+- GUI 新增 **帮助 → 关于**：显示开发者 `dieraun`、构建版本 `1.0.0 (2026-10-17)`、
+  MIT License、仓库地址和运行时版本。
+- GUI 新增 **帮助 → 检查更新**：通过 GitHub Releases/Tags API 比较最新版本。
+  启动后自动检查，失败只记录日志，不阻塞使用。
+- WebM → MP4 转换器基于 `mp4_merger.py v4.5` 重构：GPU 实际试编码验证、
+  NVENC/QSV/AMF/VAAPI 支持、运行时失败自动回退 CPU、CRF 16 / AAC 320k。
+- 提供 v1.0.0 单文件 EXE 和 GitHub tag/release。
+
 ## 项目定位
 
-`rpa-loader-analyzer` 是一个命令行研究工具，解决三个问题：
+`rpa-loader-analyzer` 是一个本地 GUI/CLI 研究工具，解决三个问题：
 
 1. 用 uncompyle6 将 `renpy/loader.pyo` 静态反编译为文本；
 2. 用 Python AST 静态提取 XOR 解密常量，输出标准化规则 JSON；
@@ -26,7 +37,7 @@
 | `src/ast_analyzer` | AST 遍历 `BitXor`，常量/别名/简单表达式数据流追踪；反汇编文本的 XOR 回退分析 |
 | `src/rpa_core` | RPA 头部、zlib 索引、安全 pickle 解析、XOR 规则应用 |
 | `src/exporter` | 重建目录树、原子写入、过滤空文件、路径穿越防护 |
-| `src/media_convert` | WebM 识别，优先流复制，失败后重编码；支持 NVENC/QSV/VAAPI |
+| `src/media_convert` | 基于 mp4_merger v4.5：硬件验证、CPU 回退、H.264/AAC 重编码 |
 
 ## 安全设计（硬约束）
 
@@ -85,8 +96,8 @@ dist\RpaLoaderAnalyzer.exe
    `工作目录\rules.json`。
 2. **导出 RPA**：自动使用 `rules.json`（存在时），将全部归档导出到
    `工作目录\export\<归档名>\`。
-3. **媒体转换**：选择 WebM 和输出 MP4，支持 NVENC/QSV/VAAPI 与强制 H.264/AAC
-   重编码。
+3. **媒体转换**：选择 WebM 和输出 MP4；基于 mp4_merger v4.5，自动验证
+   NVIDIA / Intel / AMD 硬件编码器，失败回退 CPU，默认 H.264/AAC（CRF 16 / 320k）。
 
 界面右上角可切换 **简体中文 / English**，仅支持这两种语言。切换后界面立即重建，
 选择会保存到：
@@ -99,6 +110,26 @@ dist\RpaLoaderAnalyzer.exe
 
 ![RPA Loader Analyzer GUI English](docs/gui-en.png)
 
+### 关于与版本检查
+
+菜单 **帮助 → 关于** 显示：
+
+- 开发者：`dieraun`
+- 构建版本：`1.0.0 (2026-10-17)`
+- MIT License
+- 项目仓库地址
+- 当前 Python / Tk 运行时
+
+菜单 **帮助 → 检查更新** 会请求 GitHub 固定 API：
+
+```text
+https://api.github.com/repos/dieraun/rpa-extract-analyzer/releases/latest
+```
+
+如果还没有 GitHub Release，则回退到仓库 tags。程序启动后也会自动检查一次。
+检查只做 HTTPS GET，不上传本地文件、游戏数据或用户信息；离线/限流/证书错误只写日志，
+不会阻塞启动。发现新版本时会提示并打开下载页面。
+
 GUI 仍然遵守 CLI 的安全边界：只读原件、不执行反编译代码、不使用 `pickle.load`、
 输出不在游戏目录内、FFmpeg 只在点击“开始转换”时调用。
 
@@ -109,6 +140,7 @@ python -m pip install -r requirements-build.txt
 python -m PyInstaller --noconfirm --clean --onefile --windowed \
   --name RpaLoaderAnalyzer --paths . \
   --collect-all uncompyle6 --collect-all xdis \
+  --hidden-import urllib.request --hidden-import urllib.error \
   --distpath dist --workpath build --specpath build gui_entry.py
 ```
 
@@ -205,26 +237,36 @@ python -m src export-all "D:\Games\MyGame" \
 
 ### 6. WebM 转 MP4
 
+转换器基于参考实现 `mp4_merger.py v4.5` 的策略重构：
+
+- 默认直接重编码为 H.264/AAC：CRF 16、AAC 320k、faststart
+- 自动检测硬件编码器，并用 1 秒测试源验证是否真的可用
+- 支持 NVIDIA NVENC、Intel QSV、AMD AMF、VAAPI 和 CPU
+- 硬件验证或运行时失败自动回退 CPU
+- 除非源视频确实是 10-bit，否则统一 8-bit 4:2:0 以保证兼容性
+- 可选流复制快速路径；失败后自动重编码
+
 ```bash
-# 先尝试流复制；不兼容时自动重编码
+# 默认：自动选择硬件编码器，失败回退 CPU，H.264/AAC 高画质
 python -m src convert ".\output\video.webm" ".\output\video.mp4"
 
-# 强制重编码为 H.264/AAC（即使流复制技术上可行）
-python -m src convert ".\output\video.webm" ".\output\video.mp4" --reencode
+# 强制 CPU
+python -m src convert ".\output\video.webm" ".\output\video.mp4" --hardware cpu
 
-# NVIDIA NVENC
-python -m src convert ".\output\video.webm" ".\output\video.mp4" --hardware nvenc --codec h264
+# NVIDIA / Intel / AMD
+python -m src convert ".\output\video.webm" ".\output\video.mp4" --hardware nvidia
+python -m src convert ".\output\video.webm" ".\output\video.mp4" --hardware intel
+python -m src convert ".\output\video.webm" ".\output\video.mp4" --hardware amd
 
-# Intel QSV
-python -m src convert ".\output\video.webm" ".\output\video.mp4" --hardware qsv
+# 先尝试快速流复制；失败后仍然重编码
+python -m src convert ".\output\video.webm" ".\output\video.mp4" --copy
 
-# VAAPI（Linux）
-python -m src convert ".\output\video.webm" ".\output\video.mp4" \
-  --hardware vaapi --vaapi-device /dev/dri/renderD128
+# 更快的编码 preset（画质/体积略有取舍）
+python -m src convert ".\output\video.webm" ".\output\video.mp4" --fast
 ```
 
-如果 ffmpeg 未安装，命令会给出友好错误。流复制失败原因会记录在结果的
-`attempts` 字段中。
+如果 ffmpeg 未安装，命令会给出友好错误。硬件验证、流复制失败和 CPU 回退原因都会
+记录在结果的 `attempts` 字段中。
 
 ## 规则 JSON 格式
 
@@ -284,6 +326,8 @@ rpa-loader-analyzer/
 │   ├── cli.py
 │   ├── gui.py
 │   ├── i18n.py
+│   ├── build_info.py
+│   ├── update_checker.py
 │   ├── scanner/
 │   ├── decompiler/
 │   ├── ast_analyzer/
@@ -316,9 +360,10 @@ python -m unittest discover -s tests -v
 
 测试覆盖扫描、字节码头、uncompyle6 调用封装、xdis 反汇编、Python 2 语法规范化、
 XOR 数据流与反汇编回退、恶意 pickle 拒绝、RPA-2/3/3.2/4 解析、规则覆盖、路径穿越、
-原子导出、GUI 辅助逻辑、中英文语言切换与设置持久化、FFmpeg 命令构造与 CLI 端到端流程。
-FFmpeg 单元测试使用 mock 验证回退逻辑；如果本机存在 `ffmpeg`/`ffprobe`，集成测试还会
-生成短视频并执行一次真实 WebM -> MP4 转换（缺少编码器时自动跳过，不访问网络）。
+原子导出、GUI 关于/更新检查、中英文语言切换与设置持久化、GPU 验证/CPU 回退、
+FFmpeg 命令构造与 CLI 端到端流程。FFmpeg 单元测试使用 mock 验证回退逻辑；如果本机
+存在 `ffmpeg`/`ffprobe`，集成测试还会生成短视频并执行一次真实 WebM -> MP4 转换
+（缺少编码器时自动跳过）。版本检查测试使用 fake opener，不访问真实网络。
 
 ## 常见问题
 

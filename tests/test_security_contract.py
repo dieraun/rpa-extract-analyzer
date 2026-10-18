@@ -50,9 +50,21 @@ class SecurityContractTests(unittest.TestCase):
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        self.assertNotIn(alias.name.split(".")[0], forbidden)
+                        root = alias.name.split(".")[0]
+                        if root in forbidden:
+                            self.assertEqual(
+                                path.name,
+                                "update_checker.py",
+                                f"网络客户端只允许用于更新检查: {path}",
+                            )
                 elif isinstance(node, ast.ImportFrom) and node.module:
-                    self.assertNotIn(node.module.split(".")[0], forbidden)
+                    root = node.module.split(".")[0]
+                    if root in forbidden:
+                        self.assertEqual(
+                            path.name,
+                            "update_checker.py",
+                            f"网络客户端只允许用于更新检查: {path}",
+                        )
 
     def test_subprocess_is_confined_to_media_wrapper(self) -> None:
         for path in _source_files():

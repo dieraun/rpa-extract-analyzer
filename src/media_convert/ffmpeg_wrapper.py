@@ -1,12 +1,17 @@
-"""Minimal local FFmpeg wrapper for WebM -> MP4 conversion.
+"""WebM -> MP4 conversion based on the mp4_merger.py v4.5 strategy.
 
-The wrapper only invokes local ``ffmpeg``/``ffprobe`` executables through an
-argument list with ``shell=False``.  It tries a stream copy first and falls
-back to a controlled re-encode.  Inputs are never modified and outputs are
-written atomically through a temporary file.
+Key ideas ported from the reference implementation:
 
-FFmpeg is an external, explicitly user-invoked tool.  This module never
-downloads binaries and never accepts a URL as an input.
+* probe duration, codecs, pixel format and bit depth;
+* verify GPU encoders with a one-second test encode before using them;
+* automatically fall back to CPU when a GPU encoder is missing or fails;
+* high-quality defaults (CRF 16, AAC 320k), 8-bit 4:2:0 compatibility unless
+  the source is genuinely 10-bit;
+* optional stream-copy fast path;
+* temporary output plus atomic rename, input never modified.
+
+Only local executables are called, via argument lists with ``shell=False`` and
+the ``file`` protocol whitelist.  No network access is performed.
 """
 
 from __future__ import annotations
@@ -25,18 +30,39 @@ from typing import Any, Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
-HARDWARE_CHOICES = ("none", "nvenc", "qsv", "vaapi")
-VIDEO_CODEC_CHOICES = ("h264", "hevc")
-SUPPORTED_OUTPUT_SUFFIXES = {".mp4", ".mkv", ".webm"}
+HARDWARE_CHOICES = ("auto", "cpu", "nvidia", "intel", "amd", "vaapi")
+_HARDWARE_ALIASES = {
+    "none": "cpu",
+    "nvenc": "nvidia",
+    "qsv": "intel",
+    "amf": "amd",
+    "automatic": "auto",
+}
+SUPPORTED_OUTPUT_SUFFIXES = {".mp4"}
+DEFAULT_CRF = 16
+DEFAULT_AUDIO_BITRATE = "320k"
+_GPU_CANDIDATES = (
+    ("nvidia", "h264_nvenc"),
+    ("intel", "h264_qsv"),
+    ("amd", "h264_amf"),
+)
 
 
 class MediaError(RuntimeError):
     """Raised for invalid media inputs or FFmpeg failures."""
 
 
+def normalize_hardware(value: str) -> str:
+    key = str(value or "auto").strip().casefold()
+    key = _HARDWARE_ALIASES.get(key, key)
+    if key not in HARDWARE_CHOICES:
+        raise MediaError(f"不支持的硬件编码器: {value}")
+    return key
+
+
 @dataclass(frozen=True, slots=True)
 class MediaInfo:
-    """The small subset of ffprobe output this tool needs."""
+    """The subset of ffprobe output used by the converter."""
 
     path: Path
     format_name: str
@@ -45,8 +71,11 @@ class MediaInfo:
     audio_codec: str | None
     width: int | None
     height: int | None
-    has_video: bool
-    has_audio: bool
+    pix_fmt: str = ""
+    bit_depth: int = 8
+    size: int = 0
+    has_video: bool = False
+    has_audio: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +86,9 @@ class MediaInfo:
             "audio_codec": self.audio_codec,
             "width": self.width,
             "height": self.height,
+            "pix_fmt": self.pix_fmt,
+            "bit_depth": self.bit_depth,
+            "size": self.size,
             "has_video": self.has_video,
             "has_audio": self.has_audio,
         }
@@ -68,31 +100,30 @@ class FfmpegOptions:
 
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
-    hardware: str = "none"
-    hardware_codec: str = "h264"
-    crf: int = 23
-    preset: str = "medium"
-    audio_bitrate: str = "192k"
+    hardware: str = "auto"
+    crf: int = DEFAULT_CRF
+    audio_bitrate: str = DEFAULT_AUDIO_BITRATE
     timeout: float = 3600.0
     overwrite: bool = False
+    stream_copy_first: bool = False
+    force_8bit: bool = False
+    fast: bool = False
     vaapi_device: str = "/dev/dri/renderD128"
-    force_reencode: bool = False
 
     def __post_init__(self) -> None:
-        if self.hardware not in HARDWARE_CHOICES:
-            raise MediaError(f"不支持的硬件编码器: {self.hardware}")
-        if self.hardware_codec not in VIDEO_CODEC_CHOICES:
-            raise MediaError(f"不支持的视频编码: {self.hardware_codec}")
+        normalize_hardware(self.hardware)
         if not 0 <= self.crf <= 51:
             raise MediaError("crf 必须在 0..51 之间")
         if self.timeout <= 0:
             raise MediaError("timeout 必须大于 0")
         if not re.fullmatch(r"\d+(?:\.\d+)?[kKmM]?", self.audio_bitrate):
             raise MediaError(f"音频码率格式非法: {self.audio_bitrate}")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", self.preset):
-            raise MediaError(f"preset 格式非法: {self.preset!r}")
         if not self.vaapi_device or any(ord(char) < 32 for char in self.vaapi_device):
             raise MediaError("vaapi_device 路径非法")
+
+    @property
+    def hardware_key(self) -> str:
+        return normalize_hardware(self.hardware)
 
 
 @dataclass(slots=True)
@@ -148,6 +179,11 @@ def _decode_output(value: bytes | str | None) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
+        for encoding in ("utf-8-sig", "utf-8", "gbk", "latin-1"):
+            try:
+                return value.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                continue
         return value.decode("utf-8", "replace")
     return value
 
@@ -159,9 +195,15 @@ def _resolve_binary(name: str) -> str:
     found = shutil.which(name)
     if not found:
         raise MediaError(
-            f"未找到 {name}；请先安装 FFmpeg 并确保它在 PATH 中，或显式传入可执行文件路径"
+            f"未找到 {name}；请先安装 FFmpeg 并确保它在 PATH 中，或显式传入路径"
         )
     return found
+
+
+def _windows_creationflags() -> int:
+    if os.name == "nt":
+        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return 0
 
 
 def _run(
@@ -186,6 +228,7 @@ def _run(
             timeout=timeout,
             check=False,
             shell=False,
+            creationflags=_windows_creationflags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise MediaError(f"FFmpeg 命令超时（{timeout} 秒）") from exc
@@ -195,6 +238,16 @@ def _run(
 
 def _tail(text: str, limit: int = 4000) -> str:
     return text[-limit:] if len(text) > limit else text
+
+
+def _parse_bit_depth(pix_fmt: str) -> int:
+    match = re.search(r"p(\d{1,2})(?:le|be)?$", pix_fmt or "")
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return 8
 
 
 def probe_media(
@@ -240,27 +293,35 @@ def probe_media(
     streams = payload.get("streams") or []
     if not isinstance(streams, list):
         streams = []
-    video_stream = next(
-        (item for item in streams if isinstance(item, dict) and item.get("codec_type") == "video"),
-        None,
-    )
-    audio_stream = next(
-        (item for item in streams if isinstance(item, dict) and item.get("codec_type") == "audio"),
-        None,
-    )
+    video_stream = None
+    audio_stream = None
+    for item in streams:
+        if not isinstance(item, dict):
+            continue
+        if item.get("codec_type") == "video" and video_stream is None:
+            disposition = item.get("disposition") or {}
+            if not disposition.get("attached_pic"):
+                video_stream = item
+        elif item.get("codec_type") == "audio" and audio_stream is None:
+            audio_stream = item
     format_info = payload.get("format") if isinstance(payload.get("format"), dict) else {}
-    duration: float | None
     try:
-        duration = float(format_info.get("duration")) if format_info.get("duration") is not None else None
+        duration = (
+            float(format_info.get("duration"))
+            if format_info.get("duration") is not None
+            else None
+        )
     except (TypeError, ValueError):
         duration = None
     width = height = None
+    pix_fmt = ""
     if video_stream:
         try:
             width = int(video_stream["width"]) if video_stream.get("width") is not None else None
             height = int(video_stream["height"]) if video_stream.get("height") is not None else None
         except (TypeError, ValueError):
             width = height = None
+        pix_fmt = str(video_stream.get("pix_fmt") or "")
     return MediaInfo(
         path=media_path,
         format_name=str(format_info.get("format_name") or ""),
@@ -269,6 +330,9 @@ def probe_media(
         audio_codec=(audio_stream or {}).get("codec_name"),
         width=width,
         height=height,
+        pix_fmt=pix_fmt,
+        bit_depth=_parse_bit_depth(pix_fmt),
+        size=media_path.stat().st_size,
         has_video=video_stream is not None,
         has_audio=audio_stream is not None,
     )
@@ -289,83 +353,208 @@ def _base_command(ffmpeg: str, input_path: Path, output_path: Path, overwrite: b
     ]
 
 
-def _output_arguments(output_path: Path, info: MediaInfo) -> list[str]:
-    args = ["-map", "0:v:0?", "-map", "0:a:0?"]
-    if output_path.suffix.casefold() == ".mp4":
-        args.extend(["-movflags", "+faststart"])
-    return args
-
-
 def _copy_command(
     ffmpeg: str, input_path: Path, output_path: Path, info: MediaInfo, overwrite: bool
 ) -> list[str]:
     command = _base_command(ffmpeg, input_path, output_path, overwrite)
-    command.extend(_output_arguments(output_path, info))
-    command.extend(["-c", "copy", str(output_path)])
+    command.extend(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy"])
+    command.extend(["-movflags", "+faststart", str(output_path)])
     return command
 
 
-def _video_encoder(options: FfmpegOptions, output_path: Path) -> str:
-    suffix = output_path.suffix.casefold()
-    if suffix == ".webm":
-        if options.hardware != "none":
-            raise MediaError("WebM 输出不支持所选硬件编码器")
-        return "libvpx-vp9"
-    if options.hardware == "nvenc":
-        return "hevc_nvenc" if options.hardware_codec == "hevc" else "h264_nvenc"
-    if options.hardware == "qsv":
-        return "hevc_qsv" if options.hardware_codec == "hevc" else "h264_qsv"
-    if options.hardware == "vaapi":
-        return "hevc_vaapi" if options.hardware_codec == "hevc" else "h264_vaapi"
-    return "libx265" if options.hardware_codec == "hevc" else "libx264"
+def _decide_pix_args(info: MediaInfo, options: FfmpegOptions) -> list[str]:
+    """Port of mp4_merger's 8-bit compatibility decision for one source."""
+
+    if info.bit_depth >= 10 and not options.force_8bit:
+        return []
+    return ["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"]
 
 
-def _reencode_command(
+def _cpu_preset(options: FfmpegOptions) -> str:
+    cores = os.cpu_count() or 4
+    return "veryfast" if (options.fast or cores <= 4) else "slow"
+
+
+def _video_args(hardware: str, options: FfmpegOptions) -> tuple[str, list[str]]:
+    if hardware == "nvidia":
+        preset = "p1" if options.fast else "p4"
+        return (
+            "h264_nvenc",
+            ["-c:v", "h264_nvenc", "-preset", preset, "-rc", "vbr",
+             "-cq", str(options.crf), "-b:v", "0"],
+        )
+    if hardware == "intel":
+        preset = "veryfast" if options.fast else "medium"
+        return (
+            "h264_qsv",
+            ["-c:v", "h264_qsv", "-preset", preset,
+             "-global_quality", str(options.crf)],
+        )
+    if hardware == "amd":
+        quality = "speed" if options.fast else "balanced"
+        return (
+            "h264_amf",
+            ["-c:v", "h264_amf", "-quality", quality,
+             "-qp_i", str(options.crf), "-qp_p", str(options.crf)],
+        )
+    if hardware == "vaapi":
+        return (
+            "h264_vaapi",
+            ["-c:v", "h264_vaapi", "-qp", str(options.crf)],
+        )
+    return (
+        "libx264",
+        ["-c:v", "libx264", "-preset", _cpu_preset(options),
+         "-crf", str(options.crf)],
+    )
+
+
+def _transcode_command(
     ffmpeg: str,
     input_path: Path,
     output_path: Path,
     info: MediaInfo,
     options: FfmpegOptions,
+    hardware: str,
 ) -> list[str]:
-    suffix = output_path.suffix.casefold()
-    encoder = _video_encoder(options, output_path)
-    command: list[str] = []
-    if options.hardware == "vaapi":
-        command.extend([ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
-                        "-protocol_whitelist", "file", "-vaapi_device", options.vaapi_device])
+    if hardware == "vaapi":
+        command = [
+            ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-protocol_whitelist",
+            "file",
+            "-vaapi_device",
+            options.vaapi_device,
+            "-y" if options.overwrite else "-n",
+            "-i",
+            str(input_path),
+        ]
     else:
         command = _base_command(ffmpeg, input_path, output_path, options.overwrite)
-    if options.hardware == "vaapi":
-        command.extend(["-y" if options.overwrite else "-n", "-i", str(input_path)])
-
-    command.extend(_output_arguments(output_path, info))
-    command.extend(["-c:v", encoder])
-    if suffix == ".webm":
-        command.extend(["-crf", str(options.crf), "-b:v", "0"])
-    elif options.hardware == "nvenc":
-        command.extend(["-preset", "p5", "-cq", str(options.crf), "-b:v", "0"])
-    elif options.hardware == "qsv":
-        command.extend(["-preset", options.preset, "-global_quality", str(options.crf)])
-    elif options.hardware == "vaapi":
-        command.extend(["-vf", "format=nv12,hwupload", "-qp", str(options.crf)])
+    command.extend(["-map", "0:v:0", "-map", "0:a:0?"])
+    if hardware == "vaapi":
+        command.extend(["-vf", "format=nv12,hwupload"])
     else:
-        command.extend(["-preset", options.preset, "-crf", str(options.crf), "-pix_fmt", "yuv420p"])
-
+        command.extend(_decide_pix_args(info, options))
+    _encoder, video = _video_args(hardware, options)
+    command.extend(video)
     if info.has_audio:
-        if suffix == ".webm":
-            command.extend(["-c:a", "libopus", "-b:a", options.audio_bitrate])
-        else:
-            command.extend(["-c:a", "aac", "-b:a", options.audio_bitrate])
+        command.extend(
+            ["-c:a", "aac", "-b:a", options.audio_bitrate,
+             "-ar", "48000", "-ac", "2"]
+        )
     else:
         command.append("-an")
-    command.append(str(output_path))
+    command.extend(
+        [
+            "-movflags",
+            "+faststart",
+            "-avoid_negative_ts",
+            "make_zero",
+            "-max_muxing_queue_size",
+            "9999",
+            str(output_path),
+        ]
+    )
     return command
+
+
+def _encoder_list(ffmpeg: str, options: FfmpegOptions, runner: Callable[..., Any] | None) -> str:
+    try:
+        completed = _run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            timeout=min(options.timeout, 30.0),
+            runner=runner,
+        )
+    except MediaError:
+        return ""
+    if getattr(completed, "returncode", 1) != 0:
+        return ""
+    return _decode_output(getattr(completed, "stdout", ""))
+
+
+def _verify_encoder(
+    ffmpeg: str,
+    encoder: str,
+    options: FfmpegOptions,
+    runner: Callable[..., Any] | None,
+) -> bool:
+    """Actually encode one second; an enumerated encoder may lack a driver."""
+
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=duration=1:size=320x240:rate=10",
+        "-c:v",
+        encoder,
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        completed = _run(command, timeout=min(options.timeout, 30.0), runner=runner)
+    except MediaError:
+        return False
+    return getattr(completed, "returncode", 1) == 0
+
+
+def _select_hardware(
+    ffmpeg: str,
+    options: FfmpegOptions,
+    runner: Callable[..., Any] | None,
+    attempts: list[str],
+) -> str:
+    requested = options.hardware_key
+    if requested == "cpu":
+        return "cpu"
+    if requested == "vaapi":
+        return "vaapi"
+    if requested == "auto":
+        encoders = _encoder_list(ffmpeg, options, runner)
+        candidates = [
+            (key, encoder)
+            for key, encoder in _GPU_CANDIDATES
+            if encoder in encoders
+        ]
+        if not candidates:
+            attempts.append("未检测到可用硬件编码器，使用 CPU")
+            return "cpu"
+        for key, encoder in candidates:
+            if _verify_encoder(ffmpeg, encoder, options, runner):
+                attempts.append(f"硬件编码器验证通过: {encoder}")
+                return key
+            attempts.append(f"硬件编码器验证失败: {encoder}")
+        attempts.append("所有硬件编码器不可用，使用 CPU")
+        return "cpu"
+    encoder = {"nvidia": "h264_nvenc", "intel": "h264_qsv", "amd": "h264_amf"}[requested]
+    if _verify_encoder(ffmpeg, encoder, options, runner):
+        attempts.append(f"硬件编码器验证通过: {encoder}")
+        return requested
+    attempts.append(f"硬件编码器不可用: {encoder}，使用 CPU")
+    return "cpu"
 
 
 def _temporary_output(output_path: Path) -> Path:
     return output_path.with_name(
         f".{output_path.stem}.{uuid.uuid4().hex}.part{output_path.suffix}"
     )
+
+
+def _cleanup(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        logger.warning("无法清理媒体临时文件: %s", path)
 
 
 def convert_webm(
@@ -375,11 +564,7 @@ def convert_webm(
     options: FfmpegOptions | None = None,
     runner: Callable[..., Any] | None = None,
 ) -> ConversionResult:
-    """Convert a local WebM file, preferring stream copy and falling back.
-
-    The output is written to a temporary file in the destination directory and
-    atomically renamed only after FFmpeg succeeds.  The input is never modified.
-    """
+    """Convert a local WebM to MP4 using the mp4_merger-derived pipeline."""
 
     started = time.monotonic()
     options = options or FfmpegOptions()
@@ -392,10 +577,7 @@ def convert_webm(
     if not source_resolved.is_file():
         raise MediaError(f"输入路径不是文件: {source_resolved}")
     if destination.suffix.casefold() not in SUPPORTED_OUTPUT_SUFFIXES:
-        raise MediaError(
-            f"不支持的输出格式 {destination.suffix!r}；"
-            f"可选 {', '.join(sorted(SUPPORTED_OUTPUT_SUFFIXES))}"
-        )
+        raise MediaError(f"不支持的输出格式 {destination.suffix!r}；当前只支持 .mp4")
     try:
         destination_resolved = destination.resolve(strict=False)
     except OSError as exc:
@@ -409,8 +591,6 @@ def convert_webm(
         raise MediaError(f"无法检查输出路径 {destination}: {exc}") from exc
     if destination_resolved.exists() and not options.overwrite:
         raise MediaError(f"输出文件已存在（如需覆盖请显式允许）: {destination_resolved}")
-    if destination_resolved.is_symlink():
-        raise MediaError(f"拒绝使用符号链接作为输出: {destination_resolved}")
 
     info = probe_media(source_resolved, options=options, runner=runner)
     if not is_webm(source_resolved, info):
@@ -430,13 +610,11 @@ def convert_webm(
         output_path=destination_resolved,
         media=info,
         stream_copy=False,
-        hardware=options.hardware,
+        hardware="cpu",
     )
-
     temporary = _temporary_output(destination_resolved)
-    if options.force_reencode:
-        result.attempts.append("已配置 force_reencode，跳过流复制")
-    else:
+
+    if options.stream_copy_first:
         copy_command = _copy_command(
             ffmpeg, source_resolved, temporary, info, options.overwrite
         )
@@ -447,7 +625,11 @@ def convert_webm(
             _cleanup(temporary)
             raise
         copy_error = _decode_output(getattr(completed, "stderr", None))
-        if getattr(completed, "returncode", 1) == 0 and temporary.is_file() and temporary.stat().st_size > 0:
+        if (
+            getattr(completed, "returncode", 1) == 0
+            and temporary.is_file()
+            and temporary.stat().st_size > 0
+        ):
             try:
                 if destination_resolved.exists() and not options.overwrite:
                     raise MediaError("输出文件在转换期间出现，未覆盖")
@@ -460,27 +642,47 @@ def convert_webm(
                 raise MediaError(f"无法完成输出文件替换: {exc}") from exc
             result.success = True
             result.stream_copy = True
+            result.hardware = "copy"
             result.elapsed_seconds = time.monotonic() - started
             result.message = "流复制成功"
             result.stderr_tail = _tail(copy_error)
             return result
-
-        result.attempts.append(f"流复制失败: {_tail(copy_error) or 'ffmpeg 未生成有效输出'}")
+        result.attempts.append(
+            f"流复制失败: {_tail(copy_error) or 'ffmpeg 未生成有效输出'}"
+        )
         _cleanup(temporary)
 
+    hardware = _select_hardware(ffmpeg, options, runner, result.attempts)
+    result.hardware = hardware
+    transcode_command = _transcode_command(
+        ffmpeg, source_resolved, temporary, info, options, hardware
+    )
+    result.commands.append(transcode_command)
     try:
-        reencode_command = _reencode_command(
-            ffmpeg, source_resolved, temporary, info, options
-        )
-    except MediaError:
-        raise
-    result.commands.append(reencode_command)
-    try:
-        completed = _run(reencode_command, timeout=options.timeout, runner=runner)
+        completed = _run(transcode_command, timeout=options.timeout, runner=runner)
     except MediaError:
         _cleanup(temporary)
         raise
     stderr = _decode_output(getattr(completed, "stderr", None))
+
+    if getattr(completed, "returncode", 1) != 0 and hardware != "cpu":
+        _cleanup(temporary)
+        result.attempts.append(
+            f"硬件编码失败({hardware})，自动回退 CPU: {_tail(stderr) or '未知错误'}"
+        )
+        cpu_command = _transcode_command(
+            ffmpeg, source_resolved, temporary, info, options, "cpu"
+        )
+        result.commands.append(cpu_command)
+        try:
+            completed = _run(cpu_command, timeout=options.timeout, runner=runner)
+        except MediaError:
+            _cleanup(temporary)
+            raise
+        stderr = _decode_output(getattr(completed, "stderr", None))
+        hardware = "cpu"
+        result.hardware = "cpu"
+
     if getattr(completed, "returncode", 1) != 0:
         _cleanup(temporary)
         raise MediaError(f"重编码失败: {_tail(stderr) or '未知错误'}")
@@ -501,14 +703,6 @@ def convert_webm(
     result.success = True
     result.stream_copy = False
     result.elapsed_seconds = time.monotonic() - started
-    result.message = "流复制不可用，已重编码"
+    result.message = "重编码成功"
     result.stderr_tail = _tail(stderr)
     return result
-
-
-def _cleanup(path: Path) -> None:
-    try:
-        if path.exists():
-            path.unlink()
-    except OSError:
-        logger.warning("无法清理媒体临时文件: %s", path)

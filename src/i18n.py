@@ -120,13 +120,13 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "media.output": "输出 MP4",
         "media.save_as": "另存为…",
         "media.hardware": "硬件编码",
-        "media.reencode": "强制重编码 H.264/AAC",
+        "media.copy_first": "优先流复制（快速，兼容性较低）",
         "media.overwrite": "允许覆盖",
         "media.convert": "开始转换",
         "media.hint": (
-            "默认先尝试流复制；目标容器不接受时自动重编码。\n"
-            "强制重编码可确保 MP4 使用 H.264/AAC（兼容性更好）。\n"
-            "需要本机已安装 ffmpeg/ffprobe。"
+            "默认使用 mp4_merger v4.5 策略重编码为 H.264/AAC（CRF 16 / 320k）。\n"
+            "自动检测并试编码 NVIDIA / Intel / AMD 硬件编码器，失败时回退 CPU。\n"
+            "勾选“优先流复制”可先尝试快速 remux。需要本机已安装 ffmpeg/ffprobe。"
         ),
         "log.title": "运行日志",
         "log.clear": "清空日志",
@@ -162,6 +162,33 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log.task_failed": "{title}失败: {error}",
         "log.result_error": "处理结果失败: {error}",
         "log.language_changed": "界面语言已切换为简体中文。",
+        "menu.help": "帮助",
+        "menu.about": "关于",
+        "menu.check_updates": "检查更新",
+        "about.title": "关于 RPA Loader Analyzer",
+        "about.description": "Ren'Py loader 静态分析 / RPA 资源导出 / WebM 转换",
+        "about.developer": "开发者: {developer}",
+        "about.build": "构建版本: {version} ({date})",
+        "about.license": "许可证: {license}",
+        "about.repo": "项目仓库",
+        "about.runtime": "运行时: Python {python} / Tk {tk}",
+        "about.safety": "仅处理你拥有合法授权的本地文件。",
+        "about.close": "关闭",
+        "about.check": "检查更新",
+        "about.open_repo": "打开 GitHub",
+        "update.checking": "正在检查 GitHub 最新版本…",
+        "update.available.title": "发现新版本",
+        "update.available.text": (
+            "当前版本: {current}\n最新版本: {latest}\n\n是否打开下载页面？"
+        ),
+        "update.latest.title": "已是最新版本",
+        "update.latest.text": "当前版本 {current} 已是最新版本。",
+        "update.failed.title": "检查更新失败",
+        "update.failed.text": "无法检查更新: {error}",
+        "log.update_checking": "正在检查 GitHub 最新版本…",
+        "log.update_available": "发现新版本: {latest}（当前 {current}）",
+        "log.update_latest": "当前已是最新版本: {current}",
+        "log.update_failed": "检查更新失败: {error}",
         "task.scan": "扫描游戏目录",
         "task.analysis": "分析 loader",
         "task.export": "导出全部 RPA",
@@ -252,13 +279,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "media.output": "Output MP4",
         "media.save_as": "Save as…",
         "media.hardware": "Hardware encoder",
-        "media.reencode": "Force H.264/AAC re-encode",
+        "media.copy_first": "Try stream copy first (fast, less compatible)",
         "media.overwrite": "Allow overwrite",
         "media.convert": "Start Conversion",
         "media.hint": (
-            "Tries stream copy first; falls back to re-encode if needed.\n"
-            "Force re-encode ensures MP4 uses H.264/AAC for better compatibility.\n"
-            "Requires local ffmpeg/ffprobe."
+            "Uses the mp4_merger v4.5 strategy: H.264/AAC, CRF 16 / 320k.\n"
+            "Auto-detects and test-encodes NVIDIA / Intel / AMD encoders, "
+            "falling back to CPU.\n"
+            "Enable stream-copy for a fast remux. Requires local ffmpeg/ffprobe."
         ),
         "log.title": "Log",
         "log.clear": "Clear Log",
@@ -300,6 +328,36 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log.task_failed": "{title} failed: {error}",
         "log.result_error": "Failed to handle result: {error}",
         "log.language_changed": "Interface language switched to English.",
+        "menu.help": "Help",
+        "menu.about": "About",
+        "menu.check_updates": "Check for Updates",
+        "about.title": "About RPA Loader Analyzer",
+        "about.description": (
+            "Static Ren'Py loader analysis / RPA export / WebM conversion"
+        ),
+        "about.developer": "Developer: {developer}",
+        "about.build": "Build: {version} ({date})",
+        "about.license": "License: {license}",
+        "about.repo": "Repository",
+        "about.runtime": "Runtime: Python {python} / Tk {tk}",
+        "about.safety": "Only process local files you are authorized to use.",
+        "about.close": "Close",
+        "about.check": "Check for Updates",
+        "about.open_repo": "Open GitHub",
+        "update.checking": "Checking the latest GitHub version…",
+        "update.available.title": "Update available",
+        "update.available.text": (
+            "Current version: {current}\nLatest version: {latest}\n\n"
+            "Open the download page?"
+        ),
+        "update.latest.title": "Up to date",
+        "update.latest.text": "Current version {current} is up to date.",
+        "update.failed.title": "Update check failed",
+        "update.failed.text": "Could not check for updates: {error}",
+        "log.update_checking": "Checking the latest GitHub version…",
+        "log.update_available": "New version available: {latest} (current {current})",
+        "log.update_latest": "Already up to date: {current}",
+        "log.update_failed": "Update check failed: {error}",
         "task.scan": "Scan game directory",
         "task.analysis": "Analyze loader",
         "task.export": "Export all RPA",

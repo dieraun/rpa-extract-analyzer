@@ -14,6 +14,7 @@ import queue
 import sys
 import threading
 import uuid
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +24,14 @@ from tkinter import filedialog, messagebox, ttk
 
 from src import __version__
 from src.ast_analyzer import analyze_loader, analyze_source
+from src.build_info import (
+    APP_NAME,
+    BUILD_DATE,
+    BUILD_VERSION,
+    DEVELOPER,
+    GITHUB_URL,
+    LICENSE_NAME,
+)
 from src.exporter import export_archive
 from src.i18n import (
     SUPPORTED_LANGUAGES,
@@ -34,8 +43,9 @@ from src.i18n import (
 from src.media_convert import FfmpegOptions, convert_webm
 from src.rpa_core import RuleSet, parse_archive
 from src.scanner import scan_game
+from src.update_checker import UpdateInfo, check_latest_version
 
-APP_TITLE = f"RPA Loader Analyzer {__version__}"
+APP_TITLE = f"{APP_NAME} {__version__}"
 DEFAULT_WORK_DIR = Path.home() / "rpa-loader-analyzer-output"
 LOG_FORMAT = "%(levelname)s %(message)s"
 
@@ -92,9 +102,16 @@ class _QueueLogHandler(logging.Handler):
 class AnalyzerApp:
     """Main window and background-task coordinator."""
 
-    def __init__(self, root: tk.Tk, *, settings_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        *,
+        settings_path: Path | None = None,
+        startup_update_check: bool = True,
+    ) -> None:
         self.root = root
         self.settings_path = settings_path
+        self.startup_update_check = startup_update_check
         self.language = load_language(settings_path)
         self.translator = Translator(self.language)
         self.root.title(APP_TITLE)
@@ -109,6 +126,8 @@ class AnalyzerApp:
         self._log_lines: list[str] = []
         self._workdir_trace: str | None = None
         self._poll_after_id: str | None = None
+        self._startup_after_id: str | None = None
+        self._update_check_running = False
         self._log_handler = _QueueLogHandler(self.events)
         self.language_label_var = tk.StringVar(
             value=SUPPORTED_LANGUAGES[self.language]
@@ -121,16 +140,21 @@ class AnalyzerApp:
         self.summary = tk.StringVar(value=self._t("status.not_scanned"))
         self.media_input = tk.StringVar()
         self.media_output = tk.StringVar()
-        self.media_hardware = tk.StringVar(value="none")
+        self.media_hardware = tk.StringVar(value="auto")
         self.media_overwrite = tk.BooleanVar(value=False)
-        self.media_reencode = tk.BooleanVar(value=False)
+        self.media_copy_first = tk.BooleanVar(value=False)
         self.overwrite_export = tk.BooleanVar(value=False)
 
         self._configure_style()
         self._build_ui()
         self._install_logging()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind("<F1>", lambda _event: self._show_about())
         self._poll_after_id = self.root.after(100, self._poll_events)
+        if startup_update_check:
+            self._startup_after_id = self.root.after(
+                1500, self._startup_update_check
+            )
         self.log(self._t("log.intro"))
 
     def _t(self, key: str, **values: Any) -> str:
@@ -152,10 +176,157 @@ class AnalyzerApp:
         style.configure("Hint.TLabel", foreground="#555555")
         style.configure("Danger.TLabel", foreground="#9b1c1c")
 
+    def _build_menu(self) -> tk.Menu:
+        menubar = tk.Menu(self.root)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(
+            label=self._t("menu.check_updates"),
+            command=lambda: self._check_for_updates(manual=True),
+        )
+        help_menu.add_command(
+            label=self._t("menu.about"),
+            accelerator="F1",
+            command=self._show_about,
+        )
+        menubar.add_cascade(label=self._t("menu.help"), menu=help_menu)
+        return menubar
+
+    def _open_url(self, url: str) -> None:
+        try:
+            webbrowser.open(url, new=2)
+        except Exception as exc:  # noqa: BLE001 - browser failure is non-fatal
+            self.log(f"{url}: {exc}", level="WARNING")
+
+    def _show_about(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title(self._t("about.title"))
+        window.transient(self.root)
+        window.resizable(False, False)
+        frame = ttk.Frame(window, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(
+            frame, text=APP_NAME, style="Title.TLabel"
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=self._t("about.description"),
+            style="Hint.TLabel",
+        ).pack(anchor="w", pady=(4, 12))
+        ttk.Label(
+            frame, text=self._t("about.developer", developer=DEVELOPER)
+        ).pack(anchor="w", pady=2)
+        ttk.Label(
+            frame,
+            text=self._t(
+                "about.build", version=BUILD_VERSION, date=BUILD_DATE
+            ),
+        ).pack(anchor="w", pady=2)
+        ttk.Label(
+            frame, text=self._t("about.license", license=LICENSE_NAME)
+        ).pack(anchor="w", pady=2)
+        ttk.Label(
+            frame, text=self._t("about.repo")
+        ).pack(anchor="w", pady=(10, 0))
+        ttk.Label(
+            frame, text=GITHUB_URL, foreground="#1d4ed8", cursor="hand2"
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=self._t(
+                "about.runtime",
+                python=sys.version.split()[0],
+                tk=tk.TkVersion,
+            ),
+            style="Hint.TLabel",
+        ).pack(anchor="w", pady=(8, 2))
+        ttk.Label(
+            frame, text=self._t("about.safety"), style="Hint.TLabel"
+        ).pack(anchor="w", pady=(2, 14))
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(
+            buttons,
+            text=self._t("about.open_repo"),
+            command=lambda: self._open_url(GITHUB_URL),
+        ).pack(side="left")
+        ttk.Button(
+            buttons,
+            text=self._t("about.check"),
+            command=lambda: self._check_for_updates(manual=True),
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            buttons, text=self._t("about.close"), command=window.destroy
+        ).pack(side="right")
+        window.grab_set()
+        window.focus_set()
+
+    def _startup_update_check(self) -> None:
+        self._startup_after_id = None
+        if self.startup_update_check:
+            self._check_for_updates(manual=False)
+
+    def _check_for_updates(self, *, manual: bool) -> None:
+        if self._update_check_running:
+            if manual:
+                messagebox.showinfo(
+                    self._t("message.busy.title"), self._t("update.checking")
+                )
+            return
+        self._update_check_running = True
+        self.log(self._t("log.update_checking"))
+
+        def worker() -> None:
+            info = check_latest_version(__version__)
+            self.events.put(("update", info, manual))
+
+        threading.Thread(
+            target=worker, daemon=True, name="rpa-update-check"
+        ).start()
+
+    def _handle_update_info(self, info: UpdateInfo, manual: bool) -> None:
+        self._update_check_running = False
+        if info.error:
+            self.log(
+                self._t("log.update_failed", error=info.error), level="WARNING"
+            )
+            if manual:
+                messagebox.showwarning(
+                    self._t("update.failed.title"),
+                    self._t("update.failed.text", error=info.error),
+                )
+            return
+        if info.update_available:
+            self.log(
+                self._t(
+                    "log.update_available",
+                    latest=info.latest_version,
+                    current=info.current_version,
+                )
+            )
+            if messagebox.askyesno(
+                self._t("update.available.title"),
+                self._t(
+                    "update.available.text",
+                    current=info.current_version,
+                    latest=info.latest_version,
+                ),
+                parent=self.root,
+            ):
+                self._open_url(info.release_url)
+            return
+        self.log(self._t("log.update_latest", current=info.current_version))
+        if manual:
+            messagebox.showinfo(
+                self._t("update.latest.title"),
+                self._t("update.latest.text", current=info.current_version),
+            )
+
     def _build_ui(self) -> None:
         self._action_buttons = []
         self.path_info = None
         self.export_path_label = None
+        self.root.config(menu=self._build_menu())
         outer = ttk.Frame(self.root, padding=12)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
@@ -377,14 +548,14 @@ class AnalyzerApp:
         ttk.Combobox(
             options,
             textvariable=self.media_hardware,
-            values=("none", "nvenc", "qsv", "vaapi"),
+            values=("auto", "cpu", "nvidia", "intel", "amd", "vaapi"),
             state="readonly",
             width=10,
         ).pack(side="left", padx=(6, 16))
         ttk.Checkbutton(
             options,
-            text=self._t("media.reencode"),
-            variable=self.media_reencode,
+            text=self._t("media.copy_first"),
+            variable=self.media_copy_first,
         ).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(
             options,
@@ -588,6 +759,9 @@ class AnalyzerApp:
                     self.log(str(event[1]))
                 elif kind == "progress":
                     self.log(str(event[1]))
+                elif kind == "update":
+                    _kind, info, manual = event
+                    self._handle_update_info(info, manual)
                 elif kind == "error":
                     self.log(str(event[1]), level="ERROR")
                     self._set_busy(False)
@@ -888,7 +1062,7 @@ class AnalyzerApp:
         options = FfmpegOptions(
             hardware=self.media_hardware.get(),
             overwrite=self.media_overwrite.get(),
-            force_reencode=self.media_reencode.get(),
+            stream_copy_first=self.media_copy_first.get(),
         )
 
         def job() -> Any:
@@ -945,6 +1119,12 @@ class AnalyzerApp:
         self.log_text.configure(state="disabled")
 
     def _on_close(self) -> None:
+        if self._startup_after_id is not None:
+            try:
+                self.root.after_cancel(self._startup_after_id)
+            except tk.TclError:
+                pass
+            self._startup_after_id = None
         if self._poll_after_id is not None:
             try:
                 self.root.after_cancel(self._poll_after_id)

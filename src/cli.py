@@ -440,14 +440,13 @@ def cmd_convert(args: argparse.Namespace) -> int:
         ffmpeg_path=args.ffmpeg,
         ffprobe_path=args.ffprobe,
         hardware=args.hardware,
-        hardware_codec=args.codec,
         crf=args.crf,
-        preset=args.preset,
         audio_bitrate=args.audio_bitrate,
         timeout=args.timeout,
         overwrite=args.overwrite,
         vaapi_device=args.vaapi_device,
-        force_reencode=args.reencode,
+        stream_copy_first=args.copy,
+        fast=args.fast,
     )
     result = convert_webm(args.input, args.output, options=options)
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
@@ -534,20 +533,29 @@ def build_parser() -> argparse.ArgumentParser:
     export_all.add_argument("--stop-on-error", action="store_true")
     export_all.set_defaults(func=cmd_export_all)
 
-    convert = subparsers.add_parser("convert", help="WebM -> MP4（先流复制，失败后重编码）")
+    convert = subparsers.add_parser(
+        "convert", help="WebM -> MP4（mp4_merger 策略，GPU 验证 + CPU 回退）"
+    )
     convert.add_argument("input")
     convert.add_argument("output")
-    convert.add_argument("--hardware", choices=("none", "nvenc", "qsv", "vaapi"), default="none")
-    convert.add_argument("--codec", choices=("h264", "hevc"), default="h264")
-    convert.add_argument("--crf", type=int, default=23)
-    convert.add_argument("--preset", default="medium")
-    convert.add_argument("--audio-bitrate", default="192k")
+    convert.add_argument(
+        "--hardware",
+        choices=("auto", "cpu", "nvidia", "intel", "amd", "vaapi"),
+        default="auto",
+    )
+    convert.add_argument("--crf", type=int, default=16)
+    convert.add_argument("--audio-bitrate", default="320k")
     convert.add_argument("--timeout", type=float, default=3600.0)
     convert.add_argument("--overwrite", action="store_true")
     convert.add_argument(
-        "--reencode",
+        "--copy",
         action="store_true",
-        help="跳过流复制，强制重编码（例如确保 MP4 使用 H.264/AAC）",
+        help="先尝试流复制（快速；失败后自动重编码）",
+    )
+    convert.add_argument(
+        "--fast",
+        action="store_true",
+        help="快速模式（更快的 CPU/GPU preset）",
     )
     convert.add_argument("--ffmpeg", default="ffmpeg")
     convert.add_argument("--ffprobe", default="ffprobe")
