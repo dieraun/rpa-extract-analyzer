@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 import traceback
 from pathlib import Path
@@ -28,6 +27,7 @@ from src.rpa_core import (
     parse_archive,
 )
 from src.scanner import GameScanError, scan_game
+from src.utils.io_utils import atomic_write_json, is_within
 
 logger = logging.getLogger("rpa_loader_analyzer")
 
@@ -50,13 +50,6 @@ def _configure_stdio() -> None:
                 pass
 
 
-def _is_within(root: Path, candidate: Path) -> bool:
-    try:
-        return os.path.commonpath((str(root), str(candidate))) == str(root)
-    except ValueError:
-        return False
-
-
 def _assert_outside(path: str | Path, roots: Sequence[Path], *, what: str) -> Path:
     target = Path(path).expanduser()
     try:
@@ -68,7 +61,7 @@ def _assert_outside(path: str | Path, roots: Sequence[Path], *, what: str) -> Pa
             root_resolved = root.resolve(strict=False)
         except OSError:
             continue
-        if _is_within(root_resolved, resolved):
+        if is_within(root_resolved, resolved):
             raise CliError(f"{what}不能写入游戏原始目录: {resolved} (游戏根 {root_resolved})")
     return resolved
 
@@ -79,21 +72,7 @@ def _write_json(path: str | Path, payload: Any) -> Path:
         raise CliError(f"JSON 输出路径是目录: {target}")
     if target.is_symlink():
         raise CliError(f"拒绝写入符号链接: {target}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, target)
-    finally:
-        try:
-            if temporary.exists():
-                temporary.unlink()
-        except OSError:
-            pass
-    return target
+    return atomic_write_json(target, payload)
 
 
 def _loader_roots(loader: Path) -> list[Path]:
@@ -379,7 +358,7 @@ def cmd_export_all(args: argparse.Namespace) -> int:
     output_root.mkdir(parents=True, exist_ok=True)
     if args.report:
         report_resolved = Path(args.report).expanduser().resolve(strict=False)
-        if _is_within(output_root, report_resolved):
+        if is_within(output_root, report_resolved):
             raise CliError("汇总报告不能写入资源输出目录，避免污染资源树")
 
     aggregate: dict[str, Any] = {

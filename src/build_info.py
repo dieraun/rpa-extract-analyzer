@@ -8,6 +8,6 @@ APP_NAME = "RPA Loader Analyzer"
 DEVELOPER = "dieraun"
 GITHUB_REPO = "dieraun/rpa-extract-analyzer"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
-BUILD_DATE = "2026-10-17"
+BUILD_DATE = "2026-10-30"
 BUILD_VERSION = __version__
 LICENSE_NAME = "MIT"

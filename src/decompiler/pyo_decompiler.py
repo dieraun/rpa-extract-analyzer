@@ -14,10 +14,11 @@ import contextlib
 import io
 import logging
 import re
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from src.utils.io_utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -365,16 +366,7 @@ def save_source(
     if target.exists() and not overwrite:
         raise FileExistsError(f"输出文件已存在（如需覆盖请显式允许）: {target}")
 
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(result.source, encoding="utf-8", newline="\n")
-        if target.exists() and not overwrite:
-            raise FileExistsError(f"输出文件已存在: {target}")
-        temporary.replace(target)
-    finally:
-        with contextlib.suppress(OSError):
-            if temporary.exists():
-                temporary.unlink()
+    atomic_write_text(target, result.source, newline="\n", overwrite=overwrite)
     logger.info("反编译源码已保存: %s", target)
     return target
 
@@ -478,18 +470,7 @@ def _atomic_write_text(
         except OSError:
             if target.absolute() == protected_path.absolute():
                 raise ValueError("输出路径不能覆盖原始字节码文件")
-    if target.exists() and not overwrite:
-        raise FileExistsError(f"输出文件已存在（如需覆盖请显式允许）: {target}")
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(text, encoding="utf-8", newline="\n")
-        if target.exists() and not overwrite:
-            raise FileExistsError(f"输出文件已存在: {target}")
-        temporary.replace(target)
-    finally:
-        with contextlib.suppress(OSError):
-            if temporary.exists():
-                temporary.unlink()
+    atomic_write_text(target, text, newline="\n", overwrite=overwrite)
     return target
 
 
@@ -658,6 +639,16 @@ _RAISE_PY2_RE = re.compile(
 _LONG_SUFFIX_RE = re.compile(r"(?<![\w.])(\d+)[lL]\b")
 _BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 _UR_PREFIX_RE = re.compile(r"(?<![A-Za-z0-9_])[uU][rR](?=['\"])")
+_PY2_BUILTIN_REWRITES = (
+    (re.compile(r"\bxrange\s*\("), "range("),
+    (re.compile(r"\bunicode\s*\("), "str("),
+    (re.compile(r"\blong\s*\("), "int("),
+    (re.compile(r"\braw_input\s*\("), "input("),
+    (re.compile(r"\bbasestring\b"), "str"),
+    (re.compile(r"\.iteritems\s*\("), ".items("),
+    (re.compile(r"\.itervalues\s*\("), ".values("),
+    (re.compile(r"\.iterkeys\s*\("), ".keys("),
+)
 
 
 def normalize_python2_source(source: str) -> tuple[str, tuple[str, ...]]:
@@ -702,14 +693,8 @@ def normalize_python2_source(source: str) -> tuple[str, tuple[str, ...]]:
 
         line = _LONG_SUFFIX_RE.sub(r"\1", line)
         line = _UR_PREFIX_RE.sub("r", line)
-        line = re.sub(r"\bxrange\s*\(", "range(", line)
-        line = re.sub(r"\bunicode\s*\(", "str(", line)
-        line = re.sub(r"\blong\s*\(", "int(", line)
-        line = re.sub(r"\braw_input\s*\(", "input(", line)
-        line = re.sub(r"\bbasestring\b", "str", line)
-        line = re.sub(r"\.iteritems\s*\(", ".items(", line)
-        line = re.sub(r"\.itervalues\s*\(", ".values(", line)
-        line = re.sub(r"\.iterkeys\s*\(", ".keys(", line)
+        for pattern, replacement in _PY2_BUILTIN_REWRITES:
+            line = pattern.sub(replacement, line)
         lines.append(line)
 
     # Preserve a trailing newline so the AST line numbers match the text.

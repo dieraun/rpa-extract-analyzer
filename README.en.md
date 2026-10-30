@@ -1,4 +1,4 @@
-# RPA Loader Analyzer 1.0.0
+# RPA Loader Analyzer 2.0.0
 
 **English** | [简体中文](README.zh-CN.md) | [Project Home](README.md)
 
@@ -10,6 +10,15 @@ bilingual GUI, automatic update checking, and a Windows single-file executable.
 > controls, crack commercial content, evade anti-cheat systems, or redistribute game assets.
 > You are responsible for complying with local law, the game EULA, and the scope of your
 > authorization. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md).
+
+## v2.0.0 Highlights
+
+- Added `pyproject.toml` and GitHub Actions CI; dependencies are pinned and Python
+  3.10–3.14 is supported.
+- GUI export now consumes `ProgressCallback` with a progress bar; update checks compare
+  pre-release suffixes and use a rate-limited cache.
+- RPA batch export reuses one file handle; the exporter caches verified parent
+  directories; atomic text/JSON writes are centralised in `src/utils/io_utils.py`.
 
 ## v1.0.0 Highlights
 
@@ -71,7 +80,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the threat model.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10–3.14 (`pyproject.toml` declares `>=3.10,<3.15`)
 - Python packages: `uncompyle6`, `xdis`
 - Optional: local `ffmpeg` and `ffprobe` for media conversion only
 
@@ -125,7 +134,7 @@ English interface:
 **Help → About** (or `F1`) shows:
 
 - Developer: `dieraun`
-- Build: `1.0.0 (2026-10-17)`
+- Build: `2.0.0 (2026-10-30)`
 - MIT License
 - Repository URL
 - Python / Tk runtime versions

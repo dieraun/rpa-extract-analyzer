@@ -83,6 +83,20 @@ class FileExporterTests(unittest.TestCase):
         with self.assertRaises(ExportError):
             FileExporter(self.archive, self.game / "exported")
 
+    def test_progress_callback_reports_each_entry(self) -> None:
+        seen: list[tuple[int, int, str]] = []
+        result = export_archive(
+            self.archive,
+            self.out,
+            progress=lambda index, total, entry: seen.append(
+                (index, total, entry.name)
+            ),
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual([item[0] for item in seen], [1, 2, 3])
+        self.assertTrue(all(item[1] == 3 for item in seen))
+        self.assertEqual(seen[-1][2], "empty.txt")
+
     def test_existing_file_is_skipped_by_default(self) -> None:
         self.out.mkdir()
         target = self.out / "images" / "pic.bin"

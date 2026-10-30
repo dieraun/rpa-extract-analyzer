@@ -26,7 +26,6 @@ from .node_finder import (
 MAX_SOURCE_BYTES = 16 * 1024 * 1024
 MAX_RESOLVE_DEPTH = 30
 MAX_INT_BITS = 4096
-MAX_SHIFT = 256
 
 _ALLOWED_BINOPS: dict[type[ast.operator], Any] = {
     ast.BitXor: operator.xor,
@@ -330,9 +329,6 @@ class ConstantResolver:
             return None
         left_value, right_value = left.value, right.value
         if isinstance(left_value, int) and isinstance(right_value, int):
-            if isinstance(op, (ast.LShift, ast.RShift)):
-                if right_value < 0 or right_value > MAX_SHIFT:
-                    return None
             if isinstance(op, ast.Mult) and (
                 left_value.bit_length() > MAX_INT_BITS
                 or right_value.bit_length() > MAX_INT_BITS

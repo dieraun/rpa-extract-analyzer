@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import os
-import uuid
 from pathlib import Path
 from typing import Any
+
+from src.utils.io_utils import atomic_write_json
 
 SUPPORTED_LANGUAGES: dict[str, str] = {
     "zh_CN": "简体中文",
@@ -64,22 +65,7 @@ def save_language(language: str, path: str | Path | None = None) -> Path:
     if normalized is None:
         raise ValueError(f"不支持的语言: {language!r}")
     settings_path = Path(path) if path is not None else default_settings_path()
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = settings_path.with_name(
-        f".{settings_path.name}.{uuid.uuid4().hex}.tmp"
-    )
-    try:
-        temporary.write_text(
-            json.dumps({"language": normalized}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(settings_path)
-    finally:
-        try:
-            if temporary.exists():
-                temporary.unlink()
-        except OSError:
-            pass
+    atomic_write_json(settings_path, {"language": normalized})
     return settings_path
 
 

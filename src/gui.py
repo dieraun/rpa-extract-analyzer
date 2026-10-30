@@ -13,7 +13,6 @@ import logging
 import queue
 import sys
 import threading
-import uuid
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +31,7 @@ from src.build_info import (
     GITHUB_URL,
     LICENSE_NAME,
 )
-from src.exporter import export_archive
+from src.exporter import ProgressCallback, export_archive
 from src.i18n import (
     SUPPORTED_LANGUAGES,
     Translator,
@@ -44,34 +43,15 @@ from src.media_convert import FfmpegOptions, convert_webm
 from src.rpa_core import RuleSet, parse_archive
 from src.scanner import scan_game
 from src.update_checker import UpdateInfo, check_latest_version
+from src.utils.io_utils import atomic_write_json, is_within
 
 APP_TITLE = f"{APP_NAME} {__version__}"
 DEFAULT_WORK_DIR = Path.home() / "rpa-loader-analyzer-output"
 LOG_FORMAT = "%(levelname)s %(message)s"
 
 
-def _is_within(root: Path, candidate: Path) -> bool:
-    try:
-        return candidate.resolve(strict=False).is_relative_to(root.resolve(strict=False))
-    except (OSError, ValueError):
-        return False
-
-
 def _atomic_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
-    finally:
-        try:
-            if temporary.exists():
-                temporary.unlink()
-        except OSError:
-            pass
+    atomic_write_json(path, payload)
 
 
 def _unique_subdir(stem: str, used: set[str]) -> str:
@@ -124,6 +104,8 @@ class AnalyzerApp:
         self.loader: Path | None = None
         self._action_buttons: list[ttk.Button] = []
         self._log_lines: list[str] = []
+        self.export_progress = tk.DoubleVar(value=0.0)
+        self.export_progress_text = tk.StringVar(value="")
         self._workdir_trace: str | None = None
         self._poll_after_id: str | None = None
         self._startup_after_id: str | None = None
@@ -277,7 +259,7 @@ class AnalyzerApp:
         self.log(self._t("log.update_checking"))
 
         def worker() -> None:
-            info = check_latest_version(__version__)
+            info = check_latest_version(__version__, force=manual)
             self.events.put(("update", info, manual))
 
         threading.Thread(
@@ -519,6 +501,18 @@ class AnalyzerApp:
         export_button.grid(row=0, column=1)
         self._action_buttons.append(export_button)
 
+        ttk.Progressbar(
+            controls,
+            variable=self.export_progress,
+            maximum=100.0,
+            mode="determinate",
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            controls,
+            textvariable=self.export_progress_text,
+            style="Hint.TLabel",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
     def _build_media_tab(self, notebook: ttk.Notebook) -> None:
         tab = ttk.Frame(notebook, padding=10)
         notebook.add(tab, text=self._t("tabs.media"))
@@ -700,7 +694,7 @@ class AnalyzerApp:
         root = self._game_root_resolved()
         if root is None:
             return True
-        if _is_within(root, target):
+        if is_within(root, target):
             messagebox.showerror(
                 self._t("message.output_blocked.title"),
                 self._t(
@@ -759,6 +753,10 @@ class AnalyzerApp:
                     self.log(str(event[1]))
                 elif kind == "progress":
                     self.log(str(event[1]))
+                elif kind == "export_progress":
+                    _kind, percent, label = event
+                    self.export_progress.set(max(0.0, min(100.0, float(percent))))
+                    self.export_progress_text.set(str(label))
                 elif kind == "update":
                     _kind, info, manual = event
                     self._handle_update_info(info, manual)
@@ -839,7 +837,7 @@ class AnalyzerApp:
                 self._t("message.scan.empty"),
             )
         # Keep the workdir outside the game root when possible.
-        if _is_within(layout.root, self._work_dir()):
+        if is_within(layout.root, self._work_dir()):
             self.log(self._t("log.workdir_inside"), level="WARNING")
 
     def _start_analysis(self) -> None:
@@ -953,6 +951,25 @@ class AnalyzerApp:
         archives = list(self.archives)
         rules_path = self._rules_path()
         overwrite = self.overwrite_export.get()
+        self.export_progress.set(0.0)
+        self.export_progress_text.set(self._t("task.export"))
+
+        def make_progress(archive_index: int) -> ProgressCallback:
+            total_archives = len(archives)
+
+            def report(index: int, total: int, entry: Any) -> None:
+                fraction = (
+                    (archive_index - 1) + (index / total if total else 1.0)
+                ) / total_archives
+                self.events.put(
+                    (
+                        "export_progress",
+                        fraction * 100.0,
+                        f"{archive_index}/{total_archives}  {entry.name}",
+                    )
+                )
+
+            return report
 
         def job() -> dict[str, Any]:
             rules = RuleSet.from_file(rules_path) if rules_path.is_file() else None
@@ -973,6 +990,13 @@ class AnalyzerApp:
                         ),
                     )
                 )
+                self.events.put(
+                    (
+                        "export_progress",
+                        ((index - 1) / total) * 100.0,
+                        archive_path.name,
+                    )
+                )
                 try:
                     archive = parse_archive(archive_path, rules=rules)
                     subdir = _unique_subdir(archive_path.stem, used)
@@ -982,6 +1006,7 @@ class AnalyzerApp:
                         overwrite=overwrite,
                         continue_on_error=True,
                         protected_roots=[game_root],
+                        progress=make_progress(index),
                     )
                     exported += len(outcome.exported)
                     skipped += len(outcome.skipped)
@@ -1007,6 +1032,7 @@ class AnalyzerApp:
         self._run(self._t("task.export"), job, self._export_done)
 
     def _export_done(self, result: dict[str, Any]) -> None:
+        self.export_progress.set(100.0)
         self.log(
             self._t(
                 "log.export_done",

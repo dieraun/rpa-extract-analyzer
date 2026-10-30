@@ -11,6 +11,7 @@ from src.update_checker import (
     LATEST_RELEASE_URL,
     TAGS_URL,
     check_latest_version,
+    clear_update_cache,
     is_newer,
     parse_version,
 )
@@ -34,18 +35,48 @@ def _opener(payload, *, status: int = 200):
 
 
 class UpdateCheckerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        clear_update_cache()
+
     def test_parse_version(self) -> None:
-        self.assertEqual(parse_version("v1.2.3"), (1, 2, 3))
-        self.assertEqual(parse_version("1.0"), (1, 0))
+        self.assertEqual(parse_version("v1.2.3"), (1, 2, 3, 1, 0, 0))
+        self.assertEqual(parse_version("1.0"), (1, 0, 0, 1, 0, 0))
+        self.assertEqual(parse_version("1.2.3-beta"), (1, 2, 3, 0, 1, 0))
+        self.assertEqual(parse_version("v1.2.3-rc.2"), (1, 2, 3, 0, 2, 2))
+        self.assertEqual(parse_version("1.2.3-beta1"), (1, 2, 3, 0, 1, 1))
+        self.assertEqual(parse_version("1.2.3-1"), (1, 2, 3, 0, 4, 1))
         self.assertEqual(parse_version("release-1.0.0"), ())
         self.assertEqual(parse_version(None), ())
 
     def test_is_newer(self) -> None:
         self.assertTrue(is_newer("v1.0.1", "1.0.0"))
         self.assertTrue(is_newer("1.1", "1.0.9"))
+        self.assertTrue(is_newer("1.2.3", "1.2.3-beta"))
+        self.assertTrue(is_newer("1.2.3-rc1", "1.2.3-beta1"))
+        self.assertFalse(is_newer("1.2.3-beta", "1.2.3"))
         self.assertFalse(is_newer("v1.0.0", "1.0.0"))
         self.assertFalse(is_newer("0.9.9", "1.0.0"))
         self.assertFalse(is_newer("bad", "1.0.0"))
+        self.assertNotEqual(parse_version("1.2.3-beta"), parse_version("1.2.3"))
+
+    def test_successful_check_is_cached_and_force_refreshes(self) -> None:
+        calls = 0
+
+        def _open(_request, timeout=None):
+            nonlocal calls
+            del timeout
+            calls += 1
+            return _Response(json.dumps({"tag_name": "v1.0.1"}).encode())
+
+        first = check_latest_version("1.0.0", opener=_open)
+        second = check_latest_version("1.0.0", opener=_open)
+        third = check_latest_version("1.0.0", opener=_open, force=True)
+        self.assertEqual(calls, 2)
+        self.assertTrue(first.checked_at)
+        self.assertFalse(first.cached)
+        self.assertTrue(second.cached)
+        self.assertFalse(third.cached)
+        self.assertTrue(third.checked_at)
 
     def test_latest_release_newer(self) -> None:
         payload = {

@@ -7,6 +7,7 @@ from .file_exporter import (
     ExportedFile,
     ExportResult,
     FileExporter,
+    ProgressCallback,
     export_archive,
     write_export_report,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "ExportResult",
     "ExportedFile",
     "FileExporter",
+    "ProgressCallback",
     "export_archive",
     "write_export_report",
 ]

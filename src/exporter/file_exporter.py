@@ -15,13 +15,12 @@ Guarantees:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any, BinaryIO, Callable, Iterable
 
 from src.rpa_core.rpa_parser import (
     RpaArchive,
@@ -29,6 +28,7 @@ from src.rpa_core.rpa_parser import (
     RpaError,
     normalize_archive_name,
 )
+from src.utils.io_utils import atomic_write_json, is_within
 
 logger = logging.getLogger(__name__)
 
@@ -97,13 +97,6 @@ class ExportResult:
 ProgressCallback = Callable[[int, int, RpaEntry], None]
 
 
-def _is_within(root: Path, candidate: Path) -> bool:
-    try:
-        return os.path.commonpath((str(root), str(candidate))) == str(root)
-    except ValueError:
-        return False
-
-
 class FileExporter:
     """Export all members of one :class:`RpaArchive`."""
 
@@ -145,7 +138,7 @@ class FileExporter:
         except OSError as exc:
             raise ExportError(f"无法解析输出目录 {requested}: {exc}") from exc
         for root in self._protected:
-            if _is_within(root, resolved_output):
+            if is_within(root, resolved_output):
                 raise ExportError(
                     f"输出目录不能位于游戏/归档目录内: {resolved_output} (受保护根 {root})"
                 )
@@ -160,29 +153,36 @@ class FileExporter:
         if resolved_output.is_symlink():
             raise ExportError(f"输出目录是符号链接: {resolved_output}")
         self.output_dir = resolved_output
+        self._verified_dirs: set[Path] = {self.output_dir}
 
     def _safe_target(self, name: str) -> Path:
         normalised = normalize_archive_name(name)
         target = self.output_dir.joinpath(*PurePosixPath(normalised).parts)
-        # Refuse any symlink component below the output root.  Checking the
-        # existing prefix is enough because missing components are created by
-        # this process and cannot be pre-planted by the archive.
+        # Refuse any symlink component below the output root.  Verified parent
+        # directories are cached: missing components are created by this
+        # process and cannot be pre-planted by the archive.
         current = self.output_dir
         for part in PurePosixPath(normalised).parts[:-1]:
             current = current / part
+            if current in self._verified_dirs:
+                continue
             if current.is_symlink():
                 raise ExportError(f"输出子目录是符号链接，拒绝穿越: {current}")
             if current.exists() and not current.is_dir():
                 raise ExportError(f"输出路径组件不是目录: {current}")
+            if current.is_dir():
+                self._verified_dirs.add(current)
         try:
             resolved_target = target.resolve(strict=False)
         except OSError as exc:
             raise ExportError(f"无法解析输出目标 {target}: {exc}") from exc
-        if not _is_within(self.output_dir, resolved_target):
+        if not is_within(self.output_dir, resolved_target):
             raise ExportError(f"输出目标越出输出目录: {target}")
         return target
 
-    def _export_one(self, entry: RpaEntry) -> ExportedFile:
+    def _export_one(
+        self, entry: RpaEntry, handle: BinaryIO | None = None
+    ) -> ExportedFile:
         target = self._safe_target(entry.name)
         if entry.length == 0:
             return ExportedFile(
@@ -205,8 +205,9 @@ class FileExporter:
             resolved_parent = target.parent.resolve(strict=True)
         except OSError as exc:
             raise ExportError(f"无法解析输出父目录 {target.parent}: {exc}") from exc
-        if not _is_within(self.output_dir, resolved_parent):
+        if not is_within(self.output_dir, resolved_parent):
             raise ExportError(f"输出父目录越出输出根: {target.parent}")
+        self._verified_dirs.add(target.parent)
 
         temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.part"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
@@ -215,14 +216,14 @@ class FileExporter:
         written = 0
         try:
             descriptor = os.open(temporary, flags, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
+            with os.fdopen(descriptor, "wb") as output_handle:
                 descriptor = -1
                 for chunk in self.archive.iter_entry_data(
-                    entry, chunk_size=self.chunk_size
+                    entry, chunk_size=self.chunk_size, handle=handle
                 ):
                     if not chunk:
                         continue
-                    handle.write(chunk)
+                    output_handle.write(chunk)
                     digest.update(chunk)
                     written += len(chunk)
             if written == 0:
@@ -265,20 +266,18 @@ class FileExporter:
             sha256=digest.hexdigest(),
         )
 
-    def export_all(self, progress: ProgressCallback | None = None) -> ExportResult:
-        """Export every member, continuing past per-file errors if configured."""
-
-        result = ExportResult(
-            archive_path=self.archive.path,
-            output_dir=self.output_dir,
-            warnings=list(self.archive.warnings),
-        )
-        total = len(self.archive.entries)
+    def _export_entries(
+        self,
+        result: ExportResult,
+        progress: ProgressCallback | None,
+        total: int,
+        handle: BinaryIO,
+    ) -> None:
         for index, entry in enumerate(self.archive.entries, start=1):
             if progress is not None:
                 progress(index, total, entry)
             try:
-                outcome = self._export_one(entry)
+                outcome = self._export_one(entry, handle)
             except (ExportError, RpaError, OSError) as exc:
                 failure = ExportedFile(
                     name=entry.name,
@@ -294,6 +293,21 @@ class FileExporter:
                 result.exported.append(outcome)
             else:
                 result.skipped.append(outcome)
+
+    def export_all(self, progress: ProgressCallback | None = None) -> ExportResult:
+        """Export every member, continuing past per-file errors if configured."""
+
+        result = ExportResult(
+            archive_path=self.archive.path,
+            output_dir=self.output_dir,
+            warnings=list(self.archive.warnings),
+        )
+        total = len(self.archive.entries)
+        try:
+            with self.archive.path.open("rb") as handle:
+                self._export_entries(result, progress, total, handle)
+        except OSError as exc:
+            raise ExportError(f"无法打开归档 {self.archive.path}: {exc}") from exc
         logger.info(
             "导出完成: %s -> %s, exported=%d skipped=%d failed=%d",
             self.archive.path,
@@ -334,20 +348,7 @@ def write_export_report(result: ExportResult, path: str | Path) -> Path:
         resolved = report_path.resolve(strict=False)
     except OSError as exc:
         raise ExportError(f"无法解析报告路径 {report_path}: {exc}") from exc
-    if _is_within(result.output_dir, resolved):
+    if is_within(result.output_dir, resolved):
         raise ExportError("导出报告不能写入资源输出目录，避免污染资源树")
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = report_path.with_name(f".{report_path.name}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(report_path)
-    finally:
-        try:
-            if temporary.exists():
-                temporary.unlink()
-        except OSError:
-            pass
+    atomic_write_json(report_path, result.to_dict())
     return report_path

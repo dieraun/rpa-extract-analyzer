@@ -1,4 +1,4 @@
-# RPA Loader Analyzer 1.0.0
+# RPA Loader Analyzer 2.0.0
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -28,7 +28,7 @@ bilingual GUI, automatic update checking, and a Windows single-file executable.
 ## Download
 
 - [dist/RpaLoaderAnalyzer.exe](dist/RpaLoaderAnalyzer.exe) — Windows 10/11 x64
-- Source: `main` branch; version `v1.0.0`
+- Source: `main` branch; version `v2.0.0`
 
 ## Quick Start
 
@@ -42,8 +42,8 @@ python -m src export "D:\Games\MyGame\game\archive.rpa" \
   --rules .\output\rules.json
 ```
 
-See the full language-specific README for installation, GUI usage, media conversion,
-rule formats, security details, and build instructions.
+Requires Python 3.10–3.14. See the full language-specific README for installation,
+GUI usage, media conversion, rule formats, security details, and build instructions.
 
 ## Documentation
 

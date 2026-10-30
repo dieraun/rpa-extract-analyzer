@@ -11,8 +11,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from src.gui import AnalyzerApp, _atomic_json, _is_within, _unique_subdir, main
+from src.gui import AnalyzerApp, _atomic_json, _unique_subdir, main
 from src.update_checker import UpdateInfo
+from src.utils.io_utils import is_within
 from tests.test_rpa_parser import build_rpa
 
 
@@ -45,8 +46,8 @@ class GuiHelperTests(unittest.TestCase):
     def test_is_within(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.assertTrue(_is_within(root, root / "sub" / "file"))
-            self.assertFalse(_is_within(root, root.parent / "outside"))
+            self.assertTrue(is_within(root, root / "sub" / "file"))
+            self.assertFalse(is_within(root, root.parent / "outside"))
 
     def test_unique_subdir(self) -> None:
         used: set[str] = set()
@@ -108,6 +109,7 @@ class GuiHelperTests(unittest.TestCase):
                             / "background.png"
                         ).is_file()
                     )
+                    self.assertEqual(app.export_progress.get(), 100.0)
             finally:
                 app._on_close()
 
@@ -181,7 +183,7 @@ class GuiHelperTests(unittest.TestCase):
             self.assertEqual(len(dialogs), 1)
             texts = " ".join(_texts(dialogs[0]))
             self.assertIn("dieraun", texts)
-            self.assertIn("1.0.0", texts)
+            self.assertIn("2.0.0", texts)
             self.assertIn("MIT", texts)
             dialogs[0].destroy()
         finally:

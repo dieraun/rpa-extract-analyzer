@@ -1,4 +1,4 @@
-# RPA Loader Analyzer 1.0.0
+# RPA Loader Analyzer 2.0.0
 
 [English](README.en.md) | **简体中文** | [项目首页](README.md)
 
@@ -8,6 +8,13 @@ Windows 单文件 EXE。
 > **用途限制**：仅供对**拥有合法授权**的文件进行技术学习、兼容性研究和数据恢复。
 > 不用于绕过访问控制、破解商业内容、规避反作弊或分发游戏资源。使用者需自行确认
 > 当地法律、游戏许可协议和授权范围。详见 [docs/COMPLIANCE.md](docs/COMPLIANCE.md)。
+
+## v2.0.0 更新
+
+- 新增 `pyproject.toml` 与 GitHub Actions CI；锁定依赖版本，支持 Python 3.10–3.14。
+- GUI 导出接入 `ProgressCallback` 和进度条；更新检查增加预发布版本比较与限频缓存。
+- RPA 批量导出复用文件句柄；exporter 缓存已验证父目录；原子文本/JSON 写入统一到
+  `src/utils/io_utils.py`。
 
 ## v1.0.0 更新
 
@@ -65,7 +72,7 @@ Windows 单文件 EXE。
 
 ## 环境要求
 
-- Python 3.10+
+- Python 3.10–3.14（`pyproject.toml` 声明 `>=3.10,<3.15`）
 - Python 包：`uncompyle6`、`xdis`
 - 可选：本地 `ffmpeg` 与 `ffprobe`（仅媒体转换需要，不随项目下载）
 
@@ -117,7 +124,7 @@ dist\RpaLoaderAnalyzer.exe
 菜单 **帮助 → 关于** 显示：
 
 - 开发者：`dieraun`
-- 构建版本：`1.0.0 (2026-10-17)`
+- 构建版本：`2.0.0 (2026-10-30)`
 - MIT License
 - 项目仓库地址
 - 当前 Python / Tk 运行时

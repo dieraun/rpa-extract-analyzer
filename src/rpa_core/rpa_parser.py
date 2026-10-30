@@ -20,7 +20,7 @@ import re
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
 
 from .rule_applier import RuleError, RuleSet, XorRule
 from .safe_pickle_reader import (
@@ -246,30 +246,49 @@ class RpaArchive:
         chunks = self.iter_entry_data(entry)
         return b"".join(chunks)
 
-    def iter_entry_data(
-        self, entry: RpaEntry, *, chunk_size: int = DEFAULT_CHUNK_SIZE
+    def _iter_entry_data(
+        self,
+        entry: RpaEntry,
+        handle: BinaryIO,
+        chunk_size: int,
     ) -> Iterator[bytes]:
-        """Yield an entry's bytes without loading the whole file into memory."""
+        for part in entry.parts:
+            if part.disk_length < 0:
+                raise RpaReadError(f"资源 {entry.name} 的 prefix 长度非法")
+            if part.prefix:
+                yield part.prefix
+            remaining = part.disk_length
+            handle.seek(part.offset)
+            while remaining > 0:
+                chunk = handle.read(min(chunk_size, remaining))
+                if not chunk:
+                    raise RpaReadError(
+                        f"读取资源 {entry.name} 时提前到达文件末尾"
+                    )
+                remaining -= len(chunk)
+                yield chunk
+
+    def iter_entry_data(
+        self,
+        entry: RpaEntry,
+        *,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        handle: BinaryIO | None = None,
+    ) -> Iterator[bytes]:
+        """Yield an entry's bytes, optionally reusing a caller-owned handle.
+
+        Batch exporters should pass one read-only handle for all entries to
+        avoid reopening and re-seeking the archive for every member.
+        """
 
         if chunk_size < 4096:
             raise ValueError("chunk_size 不能小于 4096")
         try:
-            with self.path.open("rb") as handle:
-                for part in entry.parts:
-                    if part.disk_length < 0:
-                        raise RpaReadError(f"资源 {entry.name} 的 prefix 长度非法")
-                    if part.prefix:
-                        yield part.prefix
-                    remaining = part.disk_length
-                    handle.seek(part.offset)
-                    while remaining > 0:
-                        chunk = handle.read(min(chunk_size, remaining))
-                        if not chunk:
-                            raise RpaReadError(
-                                f"读取资源 {entry.name} 时提前到达文件末尾"
-                            )
-                        remaining -= len(chunk)
-                        yield chunk
+            if handle is not None:
+                yield from self._iter_entry_data(entry, handle, chunk_size)
+                return
+            with self.path.open("rb") as owned:
+                yield from self._iter_entry_data(entry, owned, chunk_size)
         except OSError as exc:
             raise RpaReadError(f"读取归档 {self.path} 失败: {exc}") from exc
 
